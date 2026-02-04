@@ -31,6 +31,36 @@ _wait_for_compositor() {
     return 1
 }
 
+is_dbus_session_alive() {
+    local addr="${1:-$DBUS_SESSION_BUS_ADDRESS}"
+    [[ -n "$addr" ]] || return 1
+    DBUS_SESSION_BUS_ADDRESS="$addr" \
+        dbus-send --session --print-reply --dest=org.freedesktop.DBus \
+        /org/freedesktop/DBus org.freedesktop.DBus.GetId &>/dev/null
+}
+
+get_or_create_dbus_session() {
+    # Do we have a DBUS_SESSION_BUS_ADDRESS and is it valid?
+    if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] && is_dbus_session_alive; then
+        echo "Reusing existing D-Bus session: $DBUS_SESSION_BUS_ADDRESS" >&2
+        return 0
+    fi
+    # Do we have exist dbus socket(s) and is it valid?
+    local dbus_file dbus_addr
+    while IFS= read -r dbus_file; do
+        dbus_addr="unix:path=$dbus_file"
+        if is_dbus_session_alive "$dbus_addr"; then
+            export DBUS_SESSION_BUS_ADDRESS="$dbus_addr"
+            echo "Reusing found D-Bus session: $DBUS_SESSION_BUS_ADDRESS" >&2
+            return 0
+        fi
+    done < <(find /tmp -maxdepth 1 -uid "$(id -u)" -name 'dbus-*' -type s 2>/dev/null)
+
+    # No valid session found, create a new one
+    echo "Creating new D-Bus session" >&2
+    eval "$(dbus-launch --sh-syntax --exit-with-session)"
+}
+
 GAMELAUNCH=1
 while [ -e "${REBOOT_FLAG}" ]; do
     echo "Standalone: --- Top of display configuration loop ---" >> "$log"
@@ -344,8 +374,9 @@ while [ -e "${REBOOT_FLAG}" ]; do
     fi
 
     echo "${settings_output}" > "/var/run/switch_screen_current"
+
     # DBUS launch is required for the gio/gvfs/trash:///...
-    eval "$(dbus-launch --sh-syntax --exit-with-session)"
+    get_or_create_dbus_session
 
     ### BACKGLASS ###
     if which batocera-backglass; then
